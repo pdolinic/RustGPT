@@ -44,6 +44,67 @@ struct Output {
     choices: Vec<Choice>,
 }
 
+fn build_prompt(model: &str, prompts: &[String]) -> Prompt {
+    let messages: Vec<Message> = prompts
+        .iter()
+        .map(|prompt| Message {
+            role: "user".to_string(),
+            content: prompt.clone(),
+        })
+        .collect();
+
+    Prompt {
+        model: model.to_string(),
+        messages,
+    }
+}
+
+async fn send_request(prompt: &Prompt, api_key: &str) -> Result<Output, Box<dyn std::error::Error>> {
+    let json_data = serde_json::to_string(prompt)?;
+
+    let client = reqwest::Client::new();
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
+    headers.insert(AUTHORIZATION, format!("Bearer {}", api_key).parse().unwrap());
+
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .headers(headers)
+        .body(json_data)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let output: Output = response.json().await?;
+        Ok(output)
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Error processing prompts: {} {}", response.status(), response.text().await?),
+        )))
+    }
+}
+
+fn process_output(output: &Output) {
+    for choice in &output.choices {
+        println!("{}\n", choice.message.content);
+    }
+
+    println!(
+        "--------------------------------------------------------------------------------------------"
+    );
+    println!(
+        "Debugging fields: {:#?}",
+        (
+            ("id", &output.id),
+            ("object", &output.object),
+            ("created", &output.created),
+            ("model", &output.model)
+        )
+    );
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = "gpt-3.5-turbo";
@@ -62,60 +123,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let prompts = &args[1..];
 
-    let messages: Vec<Message> = prompts
-        .iter()
-        .map(|prompt| Message {
-            role: "user".to_string(),
-            content: prompt.clone(),
-        })
-        .collect();
+    let prompt = build_prompt(model, prompts);
 
-    let prompt = Prompt {
-        model: model.to_string(),
-        messages,
-    };
-
-    let json_data = serde_json::to_string(&prompt)?;
-
-    let client = reqwest::Client::new();
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
-    headers.insert(AUTHORIZATION, format!("Bearer {}", my_api_key).parse().unwrap());
-
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .headers(headers)
-        .body(json_data)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        let output: Output = response.json().await?;
-
-        for choice in &output.choices {
-            println!("{}\n", choice.message.content);
-        }
-
-        println!(
-            "--------------------------------------------------------------------------------------------"
-        );
-        println!(
-            "Debugging fields: {:#?}",
-            (
-                ("id", &output.id),
-                ("object", &output.object),
-                ("created", &output.created),
-                ("model", &output.model)
-            )
-        );
-    } else {
-        println!(
-            "Error processing prompts: {} {}",
-            response.status(),
-            response.text().await?
-        );
+    match send_request(&prompt, &my_api_key).await {
+        Ok(output) => process_output(&output),
+        Err(e) => println!("Error: {}", e),
     }
 
     Ok(())
 }
+
