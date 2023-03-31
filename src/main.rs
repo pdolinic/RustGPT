@@ -15,8 +15,10 @@
 //
 use reqwest::header::{HeaderMap, CONTENT_TYPE, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
-use std::env;
+//use std::env;
 use std::fs;
+use std::io::{self, Write};
+use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Message {
@@ -44,6 +46,18 @@ struct Output {
     choices: Vec<Choice>,
 }
 
+#[derive(Error, Debug)]
+pub enum MyError {
+    #[error("error parsing json: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("error sending request: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+    #[error("unknown error")]
+    Unknown,
+}
+
 fn build_prompt(model: &str, prompts: &[String]) -> Prompt {
     let messages: Vec<Message> = prompts
         .iter()
@@ -59,7 +73,7 @@ fn build_prompt(model: &str, prompts: &[String]) -> Prompt {
     }
 }
 
-async fn send_request(prompt: &Prompt, api_key: &str) -> Result<Output, Box<dyn std::error::Error>> {
+async fn send_request(prompt: &Prompt, api_key: &str) -> Result<Output, MyError> {
     let json_data = serde_json::to_string(prompt)?;
 
     let client = reqwest::Client::new();
@@ -79,57 +93,53 @@ async fn send_request(prompt: &Prompt, api_key: &str) -> Result<Output, Box<dyn 
         let output: Output = response.json().await?;
         Ok(output)
     } else {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Error processing prompts: {} {}", response.status(), response.text().await?),
-        )))
+        Err(MyError::Unknown)
     }
 }
 
-fn process_output(output: &Output) {
-    for choice in &output.choices {
-        println!("{}\n", choice.message.content);
-    }
-
-    println!(
-        "--------------------------------------------------------------------------------------------"
-    );
-    println!(
-        "Debugging fields: {:#?}",
-        (
-            ("id", &output.id),
-            ("object", &output.object),
-            ("created", &output.created),
-            ("model", &output.model)
-        )
-    );
+async fn ask(prompt: &mut Prompt, api_key: &str) -> Result<String, MyError> {
+    let output = send_request(prompt, api_key).await?;
+    let reply = &output.choices[0].message.content;
+    println!("\nGPT-3.5-turbo: {}\n", reply);
+    Ok(reply.clone())
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = "gpt-3.5-turbo";
+async fn main() -> Result<(), MyError> {
+    let model = "gpt-4";
 
     let api_key_file = "my_api_key.txt";
     let api_key_path = format!("/usr/local/bin/{}", api_key_file);
 
     let my_api_key = fs::read_to_string(api_key_path)?.trim().to_owned();
 
-    let args: Vec<String> = env::args().collect();
+    let mut prompt = build_prompt(model, &[]); // Start with an empty history
 
-    if args.len() < 2 {
-        println!("Usage: cargo run prompts ...");
-        return Ok(());
-    }
+    // For demonstration purposes, you can run a loop until the user types "exit"
+    loop {
+        print!("You: ");
+        io::stdout().flush()?; // Flush stdout to print the prompt immediately
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        input = input.trim().to_string(); // Remove trailing whitespace
 
-    let prompts = &args[1..];
+        if input.to_lowercase() == "exit" {
+            break;
+        }
 
-    let prompt = build_prompt(model, prompts);
+        // Add user input to the history
+        prompt.messages.push(Message {
+            role: "user".to_string(),
+            content: input.clone(),
+        });
 
-    match send_request(&prompt, &my_api_key).await {
-        Ok(output) => process_output(&output),
-        Err(e) => println!("Error: {}", e),
+        // Send the updated Prompt with history, get GPT's response, and add it to the history
+        let reply = ask(&mut prompt, &my_api_key).await?;
+        prompt.messages.push(Message {
+            role: "assistant".to_string(),
+            content: reply,
+        });
     }
 
     Ok(())
 }
-
