@@ -1,5 +1,6 @@
 # RustGPT
-# Info: Add your api key under `/usr/local/bin/my_api_key.txt`
+
+Info: Add your api key under `/usr/local/bin/my_api_key.txt`
 
 - Commit with session persistence on main branch (more api cost):
 `git checkout 87b44203d0203447240aa5e4ddb03bd13b5a97e4`
